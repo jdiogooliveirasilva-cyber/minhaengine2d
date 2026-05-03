@@ -2410,7 +2410,47 @@ const Engine = (function(){
         return (o.x + ow < left) || (o.x - ow > right) ||
                (o.y + oh < top)  || (o.y - oh > bottom);
       }
-      // v6.2.2 — REMOVIDO: condições net_connected/net_in_room/net_is_host/net_event.
+      // ---- REDE — MULTIPLAYER ----
+      case "net_on_connect":{
+        if(!runtime._netFlags) return false;
+        if(runtime._netFlags.connect){ runtime._netFlags.connect = false; return true; }
+        return false;
+      }
+      case "net_on_join":{
+        if(!runtime._netFlags) return false;
+        if(runtime._netFlags.join){ runtime._netFlags.join = false; return true; }
+        return false;
+      }
+      case "net_on_disconnect":{
+        if(!runtime._netFlags) return false;
+        if(runtime._netFlags.disconnect){ runtime._netFlags.disconnect = false; return true; }
+        return false;
+      }
+      case "net_on_player_join":{
+        if(!runtime._netFlags || !runtime._netFlags.playerJoinQ.length) return false;
+        const p = runtime._netFlags.playerJoinQ.shift();
+        scene.variables["_net_player_id"]   = p.id   || "";
+        scene.variables["_net_player_name"] = p.name || "";
+        return true;
+      }
+      case "net_on_player_leave":{
+        if(!runtime._netFlags || !runtime._netFlags.playerLeaveQ.length) return false;
+        const p = runtime._netFlags.playerLeaveQ.shift();
+        scene.variables["_net_player_id"]   = p.id   || "";
+        scene.variables["_net_player_name"] = p.name || "";
+        return true;
+      }
+      case "net_on_message":{
+        if(!runtime._netFlags) return false;
+        const evName = cond.event || cond.value || "";
+        const q = runtime._netFlags.msgQ[evName];
+        if(!q || !q.length) return false;
+        const m = q.shift();
+        scene.variables["_net_msg_data"]  = typeof m.data === "object" ? JSON.stringify(m.data) : String(m.data ?? "");
+        scene.variables["_net_from_id"]   = m.from ? (m.from.id   || "") : "";
+        scene.variables["_net_from_name"] = m.from ? (m.from.name || "") : "";
+        return true;
+      }
       // ===========================================================
       // v6.2 — SCENE SYSTEM
       // ===========================================================
@@ -2749,9 +2789,36 @@ const Engine = (function(){
         if(isFinite(s) && s > 0){ obj.text.size = s; obj.width = 0; obj.height = 0; }
       } break;
 
-      // v6.2.2 — REMOVIDO: ações net_connect/net_disconnect/net_create_room/
-      // net_join_room/net_leave_room/net_send_input/net_send_state/net_send_data/
-      // net_set_local/net_unset_local/net_set_send_interval.
+      // ---- REDE — MULTIPLAYER ----
+      case "net_connect":{
+        const url = String(action.value || "").trim();
+        if(url) Net.connect(url);
+        break;
+      }
+      case "net_join":{
+        Net.join(String(action.room || ""), String(action.player || action.name || "Jogador"));
+        break;
+      }
+      case "net_send":{
+        if(Net.connected){
+          let data;
+          try { data = JSON.parse(action.value || "{}"); } catch(_){ data = action.value || ""; }
+          Net.send(String(action.event || ""), data);
+        }
+        break;
+      }
+      case "net_set_state":{
+        if(Net.connected){
+          let data;
+          try { data = JSON.parse(action.value || "{}"); } catch(_){ data = action.value || ""; }
+          Net.setState(data);
+        }
+        break;
+      }
+      case "net_disconnect":{
+        Net.disconnect();
+        break;
+      }
 
       // ===========================================================
       // v6.2 — SCENE SYSTEM ACTIONS
@@ -3676,6 +3743,21 @@ const Engine = (function(){
     };
     runtime.InputSim = InputSim;
 
+    // ==== Engine.Net — fila de flags para o sistema visual de eventos ====
+    runtime._netFlags = { connect:false, join:false, disconnect:false, playerJoinQ:[], playerLeaveQ:[], msgQ:{} };
+    (function(){
+      const nf = runtime._netFlags;
+      Net.on("connect",     ()=>{ nf.connect    = true; });
+      Net.on("join",        ()=>{ nf.join       = true; });
+      Net.on("disconnect",  ()=>{ nf.disconnect = true; });
+      Net.on("playerJoin",  (p)=>{ nf.playerJoinQ.push(p||{}); });
+      Net.on("playerLeave", (p)=>{ nf.playerLeaveQ.push(p||{}); });
+      Net.on("__any_msg__", (event, data, from)=>{
+        if(!nf.msgQ[event]) nf.msgQ[event] = [];
+        nf.msgQ[event].push({data, from});
+      });
+    })();
+
     return runtime;
   }
 
@@ -3998,6 +4080,7 @@ const Engine = (function(){
 
         } else if(msg.type === "msg"){
           emit(msg.event, msg.data, { id: msg.from, name: msg.fromName });
+          emit("__any_msg__", msg.event, msg.data, { id: msg.from, name: msg.fromName });
 
         } else if(msg.type === "ping"){
           _send({ type:"pong" });
@@ -6195,7 +6278,14 @@ const Editor = (function(){
       is_paused:"⏸ Jogo está pausado",
       distance_lt:"Distância "+objA()+" ↔ "+objB()+" < "+ieNum(P("value"), c.value, {def:100}),
       distance_gt:"Distância "+objA()+" ↔ "+objB()+" > "+ieNum(P("value"), c.value, {def:100}),
-      off_screen:obj()+" fora da tela"
+      off_screen:obj()+" fora da tela",
+      // ---- REDE — MULTIPLAYER ----
+      net_on_connect:"🌐 Conectou ao servidor",
+      net_on_join:"🌐 Entrou na sala",
+      net_on_disconnect:"🌐 Desconectou do servidor",
+      net_on_player_join:"🌐 Jogador entrou → var _net_player_name",
+      net_on_player_leave:"🌐 Jogador saiu → var _net_player_name",
+      net_on_message:"🌐 Recebeu evento online "+ieText(P("event"), c.event, "mover")+" → var _net_msg_data"
     };
     return `<div class="event-item"><span class="event-label">${labels[c.type]||c.type}</span><button class="del" data-del-cond="${kind}:${evPath}:${ci}">×</button></div>`;
   }
@@ -6299,7 +6389,13 @@ const Editor = (function(){
       set_text_size:tgt+" tamanho texto = "+ieText(P("value"), a.value, "32")+"px",
       // v6.2 — cenas
       change_scene:"🎬 Trocar para cena "+ieText(P("value"), a.value, "Menu"),
-      restart_scene:"🔄 Reiniciar cena atual"
+      restart_scene:"🔄 Reiniciar cena atual",
+      // ---- REDE — MULTIPLAYER ----
+      net_connect:"🌐 Conectar ao servidor "+ieText(P("value"), a.value, "wss://..."),
+      net_join:"🌐 Entrar na sala "+ieText(P("room"), a.room, "sala1")+" como "+ieText(P("player"), a.player, "Mario"),
+      net_send:"🌐 Enviar evento online "+ieText(P("event"), a.event, "mover")+" dados "+ieText(P("value"), a.value, '{"x":0}'),
+      net_set_state:"🌐 Definir estado compartilhado "+ieText(P("value"), a.value, '{"placar":0}'),
+      net_disconnect:"🌐 Desconectar do servidor"
     };
     return `<div class="event-item"><span class="event-label">${labels[a.type]||a.type}</span><button class="del" data-del-act="${evPath}:${ai}">×</button></div>`;
   }
@@ -6594,8 +6690,15 @@ const Editor = (function(){
         ["distance_lt","Distância entre 2 objetos <"],
         ["distance_gt","Distância entre 2 objetos >"],
         ["off_screen","Objeto fora da tela"]
+      ]],
+      ["REDE — MULTIPLAYER", [
+        ["net_on_connect","Conectou ao servidor"],
+        ["net_on_join","Entrou na sala"],
+        ["net_on_disconnect","Desconectou do servidor"],
+        ["net_on_player_join","Jogador entrou"],
+        ["net_on_player_leave","Jogador saiu"],
+        ["net_on_message","Recebeu evento online"]
       ]]
-      // v6.2.2 — REMOVIDO: seção REDE — MULTIPLAYER (engine 100% offline).
     ];
     let html = "";
     for(const [section, items] of cats){
@@ -6741,7 +6844,17 @@ const Editor = (function(){
         html = `<label>Objeto</label>${objSelectHtml("objectId","")}
           <div class="help" style="margin-top:6px">Verdadeiro quando o objeto saiu totalmente da câmera (útil para destruir projéteis).</div>`;
         needs = true; break;
-      // v6.2.2 — REMOVIDO: prompts net_event/net_connected/net_in_room/net_is_host.
+      // ---- REDE — MULTIPLAYER ----
+      case "net_on_connect": case "net_on_join": case "net_on_disconnect":
+        html = `<div class="help">Dispara <b>uma vez</b> quando o evento de rede ocorrer.<br>Use na condição <b>Quando</b> do evento.</div>`;
+        needs = true; break;
+      case "net_on_player_join": case "net_on_player_leave":
+        html = `<div class="help">Dispara quando outro jogador entra ou sai da sala.<br>Os dados ficam disponíveis nas variáveis:<br><b>_net_player_id</b> — ID do jogador<br><b>_net_player_name</b> — Nome do jogador</div>`;
+        needs = true; break;
+      case "net_on_message":
+        html = `<label>Nome do evento online</label><input name="event" placeholder="mover">
+          <div class="help" style="margin-top:6px">Dispara quando receber um evento com esse nome (enviado por outro jogador com <b>Enviar evento online</b>).<br>Os dados ficam nas variáveis:<br><b>_net_msg_data</b> — Dados (JSON)<br><b>_net_from_id</b> — ID do remetente<br><b>_net_from_name</b> — Nome do remetente</div>`;
+        needs = true; break;
       // ---- v6.2 SCENES ----
       case "scene_is": {
         // Selector com TODAS as cenas existentes (mais texto livre como
@@ -6905,9 +7018,13 @@ const Editor = (function(){
         ["set_text_color","Cor do texto"],
         ["set_text_size","Tamanho do texto"]
       ]],
-      // v6.2.2 — REMOVIDO: seção REDE — MULTIPLAYER (engine 100% offline).
-      // v6.2 — Sistema de cenas. Trocar de cena é a base pra fluxos
-      // tipo Menu → Jogo → GameOver. restart_scene reinicia a cena atual.
+      ["REDE — MULTIPLAYER", [
+        ["net_connect","Conectar ao servidor WebSocket"],
+        ["net_join","Entrar na sala"],
+        ["net_send","Enviar evento online"],
+        ["net_set_state","Definir estado compartilhado"],
+        ["net_disconnect","Desconectar do servidor"]
+      ]],
       ["CENAS", [
         ["change_scene","Trocar de cena"],
         ["restart_scene","Reiniciar cena atual"]
@@ -7194,7 +7311,29 @@ const Editor = (function(){
     if(v6ObjActs.includes(type) && !html.includes('name="objectId"')){
       html = `<label>Objeto</label>${objSelectHtml("objectId","")}` + html;
     }
-    // v6.2.2 — REMOVIDO: prompts net_* (multiplayer extirpado).
+    // ---- REDE — MULTIPLAYER ----
+    if(type==="net_connect"){
+      html = `<label>URL do servidor WebSocket</label>
+              <input name="value" type="text" placeholder="wss://meu-app.replit.app/api/net">
+              <div class="help" style="margin-top:6px">Use no evento <b>Quando a cena começar</b> para conectar automaticamente. A URL deve terminar em <b>/api/net</b> (servidor PixelEngine).</div>`;
+    }
+    if(type==="net_join"){
+      html = `<label>Nome da sala</label><input name="room" placeholder="sala1">
+              <label style="margin-top:8px">Nome do jogador</label><input name="player" placeholder="Mario">
+              <div class="help" style="margin-top:6px">Entra na sala após conectar. Use depois da condição <b>Conectou ao servidor</b>.</div>`;
+    }
+    if(type==="net_send"){
+      html = `<label>Nome do evento</label><input name="event" placeholder="mover">
+              <label style="margin-top:8px">Dados (JSON)</label><input name="value" placeholder='{"x":0,"y":0}'>
+              <div class="help" style="margin-top:6px">Envia um evento para todos os outros jogadores na sala. Os dados ficam na variável <b>_net_msg_data</b> de quem receber.</div>`;
+    }
+    if(type==="net_set_state"){
+      html = `<label>Estado compartilhado (JSON)</label><input name="value" placeholder='{"placar":0,"fase":1}'>
+              <div class="help" style="margin-top:6px">Salva um estado na sala — novos jogadores que entrarem já recebem esse estado automaticamente.</div>`;
+    }
+    if(type==="net_disconnect"){
+      html = `<div class="help">Fecha a conexão com o servidor. Os outros jogadores recebem o evento <b>Jogador saiu</b>.</div>`;
+    }
     // ============ v6.2 SCENE action prompts ============
     if(type==="restart_scene"){
       // Sem parâmetros — fecha direto.
